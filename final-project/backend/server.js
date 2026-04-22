@@ -1,16 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import sqlite3 from 'sqlite3';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import client from '../db/index.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// Get current directory for ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Middleware
 app.use(cors({
@@ -20,32 +13,6 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Initialize SQLite database
-const dbPath = path.join(__dirname, '..', 'db', 'submissions.db');
-const schemaPath = path.join(__dirname, '..', 'db', 'schema.sql');
-
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error('Error connecting to database:', err);
-  } else {
-    console.log('Connected to SQLite database at:', dbPath);
-    initializeDatabase();
-  }
-});
-
-function initializeDatabase() {
-  // Read and execute the schema
-  const schema = fs.readFileSync(schemaPath, 'utf8');
-  
-  db.exec(schema, (err) => {
-    if (err) {
-      console.error('Error initializing database:', err);
-    } else {
-      console.log('Database schema initialized successfully');
-    }
-  });
-}
 
 // Routes
 
@@ -76,9 +43,9 @@ app.post('/api/submit-form', (req, res) => {
   }
 
   // Insert into database
-  const sql = `INSERT INTO submissions (fullName, email, dateOfBirth) VALUES (?, ?, ?)`;
+  const sql = `INSERT INTO submissions (fullName, email, dateOfBirth) VALUES ($1, $2, $3) RETURNING id`;
   
-  db.run(sql, [fullName, email, dateOfBirth], function(err) {
+  client.query(sql, [fullName, email, dateOfBirth], (err, result) => {
     if (err) {
       console.error('Database error:', err);
       return res.status(500).json({
@@ -88,12 +55,13 @@ app.post('/api/submit-form', (req, res) => {
       });
     }
 
+    const id = result.rows[0].id;
     res.status(201).json({
       success: true,
       message: 'Form submitted successfully',
-      id: this.lastID,
+      id: id,
       data: {
-        id: this.lastID,
+        id: id,
         fullName,
         email,
         dateOfBirth,
@@ -107,7 +75,7 @@ app.post('/api/submit-form', (req, res) => {
 app.get('/api/submissions', (req, res) => {
   const sql = `SELECT * FROM submissions ORDER BY createdAt DESC`;
   
-  db.all(sql, [], (err, rows) => {
+  client.query(sql, (err, result) => {
     if (err) {
       console.error('Database error:', err);
       return res.status(500).json({
@@ -119,8 +87,8 @@ app.get('/api/submissions', (req, res) => {
 
     res.json({
       success: true,
-      count: rows.length,
-      data: rows
+      count: result.rows.length,
+      data: result.rows
     });
   });
 });
@@ -128,9 +96,9 @@ app.get('/api/submissions', (req, res) => {
 // Get single submission by ID
 app.get('/api/submissions/:id', (req, res) => {
   const { id } = req.params;
-  const sql = `SELECT * FROM submissions WHERE id = ?`;
+  const sql = `SELECT * FROM submissions WHERE id = $1`;
   
-  db.get(sql, [id], (err, row) => {
+  client.query(sql, [id], (err, result) => {
     if (err) {
       console.error('Database error:', err);
       return res.status(500).json({
@@ -140,7 +108,7 @@ app.get('/api/submissions/:id', (req, res) => {
       });
     }
 
-    if (!row) {
+    if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Submission not found'
@@ -149,7 +117,7 @@ app.get('/api/submissions/:id', (req, res) => {
 
     res.json({
       success: true,
-      data: row
+      data: result.rows[0]
     });
   });
 });
@@ -177,9 +145,9 @@ app.listen(PORT, () => {
 // Graceful shutdown
 process.on('SIGINT', () => {
   console.log('Shutting down gracefully...');
-  db.close((err) => {
+  client.end((err) => {
     if (err) {
-      console.error('Error closing database:', err);
+      console.error('Error closing database connection:', err);
     } else {
       console.log('Database connection closed');
     }
